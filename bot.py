@@ -1,73 +1,42 @@
 import os
 import logging
-from telegram import Update, InputFile
+import requests
+from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
-import torch
-from basicsr.archs.rrdbnet_arch import RRDBNet
-from realesrgan import RealESRGANer
-from gfpgan import GFPGANer
-import cv2
-import numpy as np
 import tempfile
+
+# Укажи здесь свой API-ключ от DeepAI
+DEEPAI_API_KEY = os.getenv("DEEPAI_API_KEY")
+
+# Telegram Bot Token (будет передан Render через переменные окружения)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-
-# Инициализация моделей — загрузка весов, если нужно
-def init_models():
-    # Загрузка моделей Real-ESRGAN и GFPGAN здесь
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_growth=32)
-    upsampler = RealESRGANer(
-        scale=4,
-        model_path='RealESRGAN_x4plus.pth',
-        model=model,
-        tile=0,
-        tile_pad=10,
-        pre_pad=0,
-        half=False,
-        device=device
-    )
-    face_enhancer = GFPGANer(
-        model_path='GFPGANv1.3.pth',
-        upscale=4,
-        arch='clean',
-        channel_multiplier=2,
-        device=device
-    )
-    return upsampler, face_enhancer
-
-upsampler, face_enhancer = None, None
-
 def start(update: Update, context: CallbackContext):
-    update.message.reply_text('Привет! Пришли мне фото, и я улучшу его качество.')
+    update.message.reply_text("Привет! Пришли мне фото, и я улучшу его качество с помощью ИИ 🤖.")
 
-def enhance_image(input_path, output_path):
-    img = cv2.imread(input_path, cv2.IMREAD_COLOR)
-    if img is None:
-        return False
-    # Улучшаем разрешение
-    output, _ = upsampler.enhance(img, outscale=4)
-    # Улучшаем лицо
-    _, _, output = face_enhancer.enhance(output, has_aligned=False, only_center_face=False, paste_back=True)
-    cv2.imwrite(output_path, output)
-    return True
+def enhance_image(file_path):
+    url = 'https://api.deepai.org/api/torch-srgan'
+    with open(file_path, 'rb') as image_file:
+        response = requests.post(
+            url,
+            files={'image': image_file},
+            headers={'api-key': DEEPAI_API_KEY}
+        )
+    data = response.json()
+    return data.get('output_url')
 
 def photo_handler(update: Update, context: CallbackContext):
-    global upsampler, face_enhancer
-    if upsampler is None or face_enhancer is None:
-        upsampler, face_enhancer = init_models()
-
-    photo_file = update.message.photo[-1].get_file()
-    with tempfile.NamedTemporaryFile(suffix='.jpg') as tf_input, tempfile.NamedTemporaryFile(suffix='.jpg') as tf_output:
-        photo_file.download(tf_input.name)
-        success = enhance_image(tf_input.name, tf_output.name)
-        if not success:
-            update.message.reply_text("Не удалось обработать изображение.")
-            return
-        update.message.reply_photo(photo=open(tf_output.name, 'rb'))
+    photo = update.message.photo[-1].get_file()
+    with tempfile.NamedTemporaryFile(suffix=".jpg") as tf:
+        photo.download(tf.name)
+        enhanced_url = enhance_image(tf.name)
+        if enhanced_url:
+            update.message.reply_photo(photo=enhanced_url)
+        else:
+            update.message.reply_text("Не удалось улучшить изображение 😢")
 
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
